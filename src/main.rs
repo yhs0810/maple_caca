@@ -31,6 +31,20 @@ struct BasicRequest {
     user_id: String,
 }
 
+#[derive(Deserialize)]
+struct AddUserRequest {
+    user_id: String,
+    days: u32,
+    who_added: String,
+    discord_tele_id: String,
+}
+
+#[derive(Serialize)]
+struct AddUserResponse {
+    status: String,
+    message: String,
+}
+
 #[derive(Serialize)]
 struct HeartbeatResponse {
     action: Option<String>,
@@ -43,7 +57,7 @@ async fn main() {
     // 데이터베이스 접속 정보 (서버 아이피, 관리자 root, 비밀번호, root 로컬 포트 3306)
     // 이 프로그램은 리눅스 서버 내부에서 실행되므로, 127.0.0.1 로컬호스트로 MySQL에 바로 접근하는 것이 가장 안전하고 빠릅니다.
     // 만약 사장님 윈도우 PC에서 테스트하신다면 127.0.0.1 부분을 93.127.129.57 로 바꿔서 실행하세요.
-    let db_url = "mysql://user_account:Aa102331253910!@127.0.0.1:3306/maplestory_bot";
+    let db_url = "mysql://seller:a10233@127.0.0.1:3306/maplestory_bot";
 
     let pool = MySqlPoolOptions::new()
         .max_connections(100) // 서버가 동시에 처리할 수 있는 DB 커넥션 최대 개수
@@ -57,6 +71,7 @@ async fn main() {
         .route("/api/login", post(login_handler))
         .route("/api/logout", post(logout_handler))
         .route("/api/heartbeat", post(heartbeat_handler))
+        .route("/api/add_user", post(add_user_handler))
         .with_state(state);
 
     // 0.0.0.0은 외부의 모든 웹 요청(유저 클라이언트 요청)을 허용한다는 뜻입니다.
@@ -217,4 +232,57 @@ async fn heartbeat_handler(
 
     // 정상일 때는 아무 명령도 내리지 않음
     Json(HeartbeatResponse { action: None })
+}
+
+/// 4. 셀러 도구 - 사용자 추가/갱신
+async fn add_user_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<AddUserRequest>,
+) -> Json<AddUserResponse> {
+    let user_id = payload.user_id;
+    let days = payload.days;
+    let who_added = payload.who_added;
+    let discord_tele_id = payload.discord_tele_id;
+
+    // 에드먼턴 시간으로 현재 시간 구하기
+    let current_time = Utc::now().with_timezone(&chrono_tz::America::Edmonton);
+    let expire_date = current_time + chrono::Duration::days(days as i64);
+    let expire_str = expire_date.naive_local();
+
+    // SQL 실행: 이미 존재하면 기간 연장 및 정보 업데이트
+    let query = "
+        INSERT INTO users (user_id, expire_date, who_added, Discord_tele_id, is_login, last_ping)
+        VALUES (?, ?, ?, ?, 0, NOW())
+        ON DUPLICATE KEY UPDATE 
+            expire_date = VALUES(expire_date),
+            who_added = VALUES(who_added),
+            Discord_tele_id = VALUES(Discord_tele_id),
+            is_login = 0,
+            last_ping = NOW()
+    ";
+
+    let res = sqlx::query(query)
+        .bind(&user_id)
+        .bind(expire_str)
+        .bind(&who_added)
+        .bind(&discord_tele_id)
+        .execute(&state.db)
+        .await;
+
+    match res {
+        Ok(_) => Json(AddUserResponse {
+            status: "ok".to_string(),
+            message: format!(
+                "Successfully added/updated user: {} ({} days)",
+                user_id, days
+            ),
+        }),
+        Err(e) => {
+            println!("DB Error (AddUser): {:?}", e);
+            Json(AddUserResponse {
+                status: "error".to_string(),
+                message: format!("Failed to add user: {}", e),
+            })
+        }
+    }
 }
