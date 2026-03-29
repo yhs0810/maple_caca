@@ -11,7 +11,8 @@ use std::net::SocketAddr;
 
 #[derive(Clone)]
 struct AppState {
-    db: MySqlPool,
+    user_db: MySqlPool,   // For login, logout, heartbeat
+    seller_db: MySqlPool, // For adding/updating users
 }
 
 #[derive(Deserialize)]
@@ -57,15 +58,26 @@ async fn main() {
     // 데이터베이스 접속 정보 (서버 아이피, 관리자 root, 비밀번호, root 로컬 포트 3306)
     // 이 프로그램은 리눅스 서버 내부에서 실행되므로, 127.0.0.1 로컬호스트로 MySQL에 바로 접근하는 것이 가장 안전하고 빠릅니다.
     // 만약 사장님 윈도우 PC에서 테스트하신다면 127.0.0.1 부분을 93.127.129.57 로 바꿔서 실행하세요.
-    let db_url = "mysql://seller:a10233@127.0.0.1:3306/maplestory_bot";
-
-    let pool = MySqlPoolOptions::new()
-        .max_connections(100) // 서버가 동시에 처리할 수 있는 DB 커넥션 최대 개수
-        .connect(db_url)
+    // 1. 유저용 DB 풀 (기존 로그인/하트비트 로직용)
+    let user_db_url = "mysql://user_account:Aa102331253910!@127.0.0.1:3306/maplestory_bot";
+    let user_pool = MySqlPoolOptions::new()
+        .max_connections(50)
+        .connect(user_db_url)
         .await
-        .expect("Failed to connect to MySQL! DB 서버가 켜져있는지 비밀번호가 맞는지 확인하세요.");
+        .expect("Failed to connect to User DB!");
 
-    let state = AppState { db: pool };
+    // 2. 셀러용 DB 풀 (사용자 추가/갱신용)
+    let seller_db_url = "mysql://seller:a10233@127.0.0.1:3306/maplestory_bot";
+    let seller_pool = MySqlPoolOptions::new()
+        .max_connections(10)
+        .connect(seller_db_url)
+        .await
+        .expect("Failed to connect to Seller DB!");
+
+    let state = AppState {
+        user_db: user_pool,
+        seller_db: seller_pool,
+    };
 
     let app = Router::new()
         .route("/api/login", post(login_handler))
@@ -93,7 +105,7 @@ async fn login_handler(
 
     let user_res = sqlx::query("SELECT expire_date, is_login FROM users WHERE user_id = ?")
         .bind(&user_id)
-        .fetch_optional(&state.db)
+        .fetch_optional(&state.user_db)
         .await;
 
     match user_res {
@@ -123,7 +135,7 @@ async fn login_handler(
                     "SELECT TIMESTAMPDIFF(SECOND, last_ping, NOW()) FROM users WHERE user_id = ?",
                 )
                 .bind(&user_id)
-                .fetch_one(&state.db)
+                .fetch_one(&state.user_db)
                 .await
                 .unwrap_or(Some(0));
 
@@ -142,7 +154,7 @@ async fn login_handler(
             let _ =
                 sqlx::query("UPDATE users SET is_login = 1, last_ping = NOW() WHERE user_id = ?")
                     .bind(&user_id)
-                    .execute(&state.db)
+                    .execute(&state.user_db)
                     .await;
 
             return Json(LoginResponse {
@@ -175,7 +187,7 @@ async fn logout_handler(
 ) -> Json<serde_json::Value> {
     let _ = sqlx::query("UPDATE users SET is_login = 0 WHERE user_id = ?")
         .bind(payload.user_id)
-        .execute(&state.db)
+        .execute(&state.user_db)
         .await;
 
     Json(serde_json::json!({"status": "ok"}))
@@ -191,13 +203,13 @@ async fn heartbeat_handler(
     // 우선 핑을 업데이트합니다.
     let _ = sqlx::query("UPDATE users SET last_ping = NOW() WHERE user_id = ? AND is_login = 1")
         .bind(&user_id)
-        .execute(&state.db)
+        .execute(&state.user_db)
         .await;
 
     // 그 다음 상태가 정상적인지 판별해 클라이언트에 명령을 내립니다.
     if let Ok(row) = sqlx::query("SELECT is_login, expire_date FROM users WHERE user_id = ?")
         .bind(&user_id)
-        .fetch_one(&state.db)
+        .fetch_one(&state.user_db)
         .await
     {
         let is_login: i8 = row.get("is_login");
@@ -221,7 +233,7 @@ async fn heartbeat_handler(
         if current_time >= expire_edmonton {
             let _ = sqlx::query("UPDATE users SET is_login = 0 WHERE user_id = ?")
                 .bind(&user_id)
-                .execute(&state.db)
+                .execute(&state.user_db)
                 .await;
 
             return Json(HeartbeatResponse {
@@ -266,7 +278,7 @@ async fn add_user_handler(
         .bind(expire_str)
         .bind(&who_added)
         .bind(&discord_tele_id)
-        .execute(&state.db)
+        .execute(&state.seller_db)
         .await;
 
     match res {
