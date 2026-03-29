@@ -284,16 +284,13 @@ async fn add_user_handler(
     match res {
         Ok(_) => Json(AddUserResponse {
             status: "ok".to_string(),
-            message: format!(
-                "Successfully added/updated user: {} ({} days)",
-                user_id, days
-            ),
+            message: format!("성공적으로 추가/갱신되었습니다: {} ({}일)", user_id, days),
         }),
         Err(e) => {
             println!("DB Error (AddUser): {:?}", e);
             Json(AddUserResponse {
                 status: "error".to_string(),
-                message: format!("Failed to add user: {}", e),
+                message: format!("사용자 추가 실패: {}", e),
             })
         }
     }
